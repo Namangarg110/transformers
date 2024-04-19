@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The HuggingFace Inc. team.
+# Copyright 2024 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,8 +38,8 @@ else:
     _import_structure["modeling_hiera"] = [
         "HIERA_PRETRAINED_MODEL_ARCHIVE_LIST",
         "HieraModel",
-        "HieraPreTrainedModel "
-        ]
+        "HieraPreTrainedModel",
+    ]
 
 
 if TYPE_CHECKING:
@@ -54,8 +54,11 @@ if TYPE_CHECKING:
     except OptionalDependencyNotAvailable:
         pass
     else:
-        from .hiera_image_processor import HieraImageProcessor
-        from .modeling_hiera import HIERA_PRETRAINED_MODEL_ARCHIVE_LIST, HieraModel, HieraPreTrainedModel
+        from .modeling_hiera import (
+            HIERA_PRETRAINED_MODEL_ARCHIVE_LIST,
+            HieraModel,
+            HieraPreTrainedModel,
+        )
 
 else:
     import sys

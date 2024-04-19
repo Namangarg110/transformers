@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2022 The HuggingFace Inc. team. All rights reserved.
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
 """ Testing suite for the PyTorch Hiera model. """
 
 import unittest
-from typing import  Tuple
-from transformers.models.hiera.hiera_model import HieraBlock
+from typing import Tuple
+
+import requests
+
 from transformers import HieraConfig
 from transformers.testing_utils import (
     require_torch,
@@ -24,25 +26,31 @@ from transformers.testing_utils import (
     torch_device,
 )
 from transformers.utils import is_torch_available
-from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
+from ...test_modeling_common import ModelTesterMixin
+
+
 if is_torch_available():
     import torch
-    from transformers import HieraModel
-    from transformers import HIERA_PRETRAINED_MODEL_ARCHIVE_LIST
-    from torchvision.transforms.functional import InterpolationMode
-    from torchvision import transforms
     from PIL import Image
+
+    from transformers import BeitImageProcessor, HieraModel
+    from transformers.models.hiera.modeling_hiera import HIERA_PRETRAINED_MODEL_ARCHIVE_LIST
 import math
+
+
 class HieraModelTester:
+    all_model_classes = (HieraModel,) if is_torch_available() else ()
+
     def __init__(
         self,
         parent,
-        input_size: Tuple[int, ...] = (224, 224),
+        input_size: Tuple[int, ...] = (32, 32),
         in_chans: int = 3,
-        embedding_dimension: int = 96,  # initial embedding input_dim
+        embedding_dimension: int = 32,  # initial embedding input_dim
         number_of_heads: int = 1,  # initial number of number_of_heads
-        num_classes: int = 1000,
-        stages: Tuple[int, ...] = (2, 3, 16, 3),
+        num_classes: int = 3,
+        stages: Tuple[int, ...] = (1, 1, 1, 1),
         q_pool: int = 3,  # number of q_pool stages
         q_stride: Tuple[int, ...] = (2, 2),
         mask_unit_size: Tuple[int, ...] = (8, 8),  # must divide q_stride ** (#stages-1)
@@ -58,6 +66,7 @@ class HieraModelTester:
         head_dropout: float = 0.0,
         head_init_scale: float = 0.001,
         sep_position_embeddings: bool = False,
+        is_training=True,
     ):
         self.parent = parent
         self.input_size = input_size
@@ -80,213 +89,135 @@ class HieraModelTester:
         self.head_dropout = head_dropout
         self.head_init_scale = head_init_scale
         self.sep_position_embeddings = sep_position_embeddings
+        self.is_training = is_training
 
-    def prepare_config_and_inputs(self,checkpoint_url):
+    def prepare_config_and_inputs(self):
         # Prepare configuration and inputs for testing your model
         pixel_values = torch.rand((1, self.in_chans, self.input_size[0], self.input_size[1]))
 
-        config = self.get_config(checkpoint_url=checkpoint_url)
+        config = self.get_config()
 
-        return config, pixel_values
+        return config, pixel_values.to(torch_device)
 
-    def get_config(self,checkpoint_url):
-        if "hiera_tiny_224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=96, 
-                                number_of_heads=1, 
-                                stages=(1, 2, 7, 2),)
-
-        elif "hiera_small_224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=96, 
-                                number_of_heads=1, 
-                                stages=(1, 2, 11, 2),)
-
-        elif "hiera_base_224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=96, number_of_heads=1, stages=(2, 3, 16, 3), )
-
-
-        elif "hiera_base_plus_224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=112, 
-                                number_of_heads=2, 
-                                stages=(2, 3, 16, 3),)
-
-        elif "hiera_large_224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=144, 
-                                number_of_heads=2, 
-                                stages=(2, 6, 36, 4),)
-
-        elif "hiera_huge_224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=256, 
-                                number_of_heads=4, 
-                                stages=(2, 6, 36, 4))
-
-        elif "hiera_base_16x224" in checkpoint_url:
-            config = HieraConfig(num_classes=self.num_classes, 
-                                input_size=(16, 224, 224),
-                                q_stride=(1, 2, 2),
-                                mask_unit_size=(1, 8, 8),
-                                patch_kernel=(3, 7, 7),
-                                patch_stride=(2, 4, 4),
-                                patch_padding=(1, 3, 3),
-                                sep_position_embeddings=True,)
-
-        elif "hiera_base_plus_16x224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=112, 
-                                number_of_heads=2, 
-                                stages=(2, 3, 16, 3))
-
-        elif "hiera_large_16x224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=144, 
-                                number_of_heads=2, 
-                                stages=(2, 6, 36, 4), )
-
-        elif "hiera_huge_16x224" in checkpoint_url:
-            config = HieraConfig(embedding_dimension=256, 
-                                number_of_heads=4, 
-                                stages=(2, 6, 36, 4) )
-        else:
-            raise RuntimeError(f"Invalid checkpoint url ({checkpoint_url})")
-
-        return config
+    def get_config(self):
+        return HieraConfig(
+            input_size=self.input_size,
+            embedding_dimension=self.embedding_dimension,
+            number_of_heads=self.number_of_heads,
+            stages=self.stages,
+            num_classes=self.num_classes,
+        )
 
     def create_and_check_model(self, config, pixel_values):
         batch_size = 1
-        model = HieraModel(config=config)
-        num_patches = int(((self.input_size[0] - self.patch_kernel[0] + 2 * self.patch_padding[0]) / self.patch_stride[0]) + 1)**2
-        flat_q_stride = math.prod(self.q_stride)
-        embedding_dimension = self.embedding_dimension
-        indermediate_shapes = []
-        for _ in self.stages:
-            indermediate_shapes.append((batch_size,int(math.sqrt(num_patches)),int(math.sqrt(num_patches)),embedding_dimension))
-            num_patches = num_patches/flat_q_stride
-            embedding_dimension = embedding_dimension * 2
-        model.eval()
-        with torch.no_grad():
-            result = model(pixel_values=pixel_values)
+        for model_class in self.all_model_classes:
+            model = model_class(config=config)
+            model.to(torch_device)
+            num_patches = (
+                int(
+                    ((self.input_size[0] - self.patch_kernel[0] + 2 * self.patch_padding[0]) / self.patch_stride[0])
+                    + 1
+                )
+                ** 2
+            )
+            flat_q_stride = math.prod(self.q_stride)
+            embedding_dimension = self.embedding_dimension
+            indermediate_shapes = []
+            for _ in self.stages:
+                indermediate_shapes.append(
+                    (batch_size, int(math.sqrt(num_patches)), int(math.sqrt(num_patches)), embedding_dimension)
+                )
+                num_patches = num_patches / flat_q_stride
+                embedding_dimension = embedding_dimension * 2
+            model.eval()
+            with torch.no_grad():
+                result = model(pixel_values=pixel_values.to(torch_device))
 
-        for idx, x in enumerate(result.intermediates):
-            self.parent.assertEqual(x.shape,indermediate_shapes[idx],"Invalid Intermediate shape")
+            for idx, x in enumerate(result.intermediates):
+                self.parent.assertEqual(x.shape, indermediate_shapes[idx], "Invalid Intermediate shape")
+
+    def prepare_config_and_inputs_for_common(self):
+        config_and_inputs = self.prepare_config_and_inputs()
+        (
+            config,
+            pixel_values,
+        ) = config_and_inputs
+        inputs_dict = {"pixel_values": pixel_values}
+        return config, inputs_dict
 
 
 @require_torch
-class HieraModelTest():
+class HieraModelTest(unittest.TestCase, ModelTesterMixin):
+    all_model_classes = (HieraModel,) if is_torch_available() else ()
+
+    test_pruning = False
+    test_resize_embeddings = False
+    test_head_masking = False
+    test_attention_outputs = False
+    test_model_outputs_equivalence = False
+    test_config = False
+    test_hidden_states_output = False
+    test_initialization = False
+    test_retain_grad_hidden_states_attentions = False
 
     def setUp(self):
         self.model_tester = HieraModelTester(self)
+        # self.config_tester = ConfigTester(self, config_class=HieraConfig, has_text_modality=False, hidden_size=32)
+
+    def test_config(self):
+        pass
+        # self.config_tester.run_common_tests()
+
+    @unittest.skip(reason="Hiera does not use inputs_embeds")
+    def test_inputs_embeds(self):
+        pass
 
     def test_model(self):
         for model_name in HIERA_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
-            config_and_inputs = self.model_tester.prepare_config_and_inputs(model_name)
+            config_and_inputs = self.model_tester.prepare_config_and_inputs()
             self.model_tester.create_and_check_model(*config_and_inputs)
 
-    # @slow
+    @slow
     def test_model_from_pretrained(self):
         for model_name in HIERA_PRETRAINED_MODEL_ARCHIVE_LIST[:1]:
             model = HieraModel.from_pretrained(model_name)
             self.assertIsNotNone(model)
 
+    def test_model_common_attributes(self):
+        config, _ = self.model_tester.prepare_config_and_inputs_for_common()
+
+        # for model_class in self.all_model_classes:
+        #     model = model_class(config)
+        #     self.assertIsInstance(model.get_input_embeddings(), (nn.Module))
+        #     x = model.get_output_embeddings()
+        #     self.assertTrue(x is None or isinstance(x, nn.Linear))
+
+
+def prepare_img():
+    image = Image.open("/home/ubuntu/home/hiera/transformers/tests/fixtures/tests_samples/COCO/000000039769.png")
+    return image
+
+
 @require_torch
 @slow
 class HieraModelIntegrationTest(unittest.TestCase):
     def test_forward(self):
-        torch_device = "cpu"
-        input_size = 224
-        batch_size =1
-        patch_kernel = (7,7)
-        patch_padding = (3,3)
-        patch_stride = (4,4)
-        q_stride = (2,2)
-        flat_q_stride =  math.prod(q_stride)
-        stages=(2, 3, 16, 3)
-        embedding_dimension = 96
-        model = HieraModel.from_pretrained("/home/ubuntu/home/hiera/model/")
+        model = HieraModel.from_pretrained("namangarg110/hiera_base_224")
         model.to(torch_device)
-        
-        random_tensor = torch.rand(batch_size, 3, input_size, input_size)
-        num_patches = int(((input_size - patch_kernel[0] + 2 * patch_padding[0]) / patch_stride[0]) + 1)**2
 
-        indermediate_shapes = []
-        for _ in stages:
-            indermediate_shapes.append((batch_size,int(math.sqrt(num_patches)),int(math.sqrt(num_patches)),embedding_dimension))
-            num_patches = num_patches/flat_q_stride
-            embedding_dimension = embedding_dimension * 2
-        out = model(random_tensor)
+        url = "https://user-images.githubusercontent.com/11435359/147738734-196fd92f-9260-48d5-ba7e-bf103d29364d.jpg"
+        image = Image.open(requests.get(url, stream=True).raw)
+        image_processor = BeitImageProcessor.from_pretrained("namangarg110/hiera_image_processor", size=224)
 
+        inputs = image_processor(images=image, return_tensors="pt")
+        pixel_values = inputs.pixel_values.to(torch_device)
+        expected_slice = torch.tensor([0.1825, 0.8655, 0.5779, 1.1550, 1.1025, 0.6381, 1.0288, -0.0624, 0.1455])
+        # If you also want intermediate feature maps
+        out = model(pixel_values)
         out.last_hidden_state.argmax(dim=-1).item()
-
-        out = model(random_tensor, return_intermediates=True)
-        for idx, x in enumerate(out.intermediates):
-            self.assertEqual(x.shape,indermediate_shapes[idx],"Invalid Intermediate shape")
-
-class TestHieraBlock(unittest.TestCase):
-    def test_output_shape(self):
-        batch_size, input_dim, output_dim = 1, 96, 192
-        number_of_heads = 2
-        mlp_ratio = 4.0
-        drop_path = 0.0
-        q_stride = 4
-        window_size = 16
-        use_mask_unit_attention = True
-        num_patches = 3136
-
-        block = HieraBlock(
-            input_dim=input_dim,
-            output_dim=output_dim,
-            number_of_heads=number_of_heads,
-            mlp_ratio=mlp_ratio,
-            drop_path=drop_path,
-            q_stride=q_stride,
-            window_size=window_size,
-            use_mask_unit_attention=use_mask_unit_attention
-        )
-
-        # Create a dummy input
-        x = torch.randn(batch_size, num_patches,input_dim)
-        
-        # Forward pass
-        out = block(x)
-
-        # Check the shape of the output
-        expected_shape = (batch_size, num_patches/q_stride, output_dim)
-        self.assertEqual(out.shape, expected_shape, "Output shape is incorrect")
-
-    def test_input_output_dim_equality(self):
-        batch_size, input_dim, output_dim = 1, 96, 96
-        number_of_heads = 1
-        mlp_ratio = 4.0
-        drop_path = 0.0
-        q_stride = 1
-        window_size = 64
-        use_mask_unit_attention = True
-        num_patches = 3136
-        block = HieraBlock(
-            input_dim=input_dim,
-            output_dim=output_dim,
-            number_of_heads=number_of_heads,
-            mlp_ratio=mlp_ratio,
-            drop_path=drop_path,
-            q_stride=q_stride,
-            window_size=window_size,
-            use_mask_unit_attention=use_mask_unit_attention
-        )
-
-        # Create a dummy input
-        x = torch.randn(batch_size, num_patches,input_dim)
-        
-        # Forward pass
-        out = block(x)
-
-        # Check the shape of the output
-        expected_shape = (batch_size, num_patches, output_dim)
-        self.assertEqual(out.shape, expected_shape, "Output shape is incorrect. Input shape should be equal to output shape")
+        self.assertTrue(torch.allclose(out.last_hidden_state[0, :9], expected_slice, atol=1e-4))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test = HieraModelIntegrationTest()
     test.test_forward()
-    block_test = TestHieraBlock()
-    block_test.test_output_shape()
-    block_test.test_input_output_dim_equality()
-    model_test = HieraModelTest()
-    model_test.setUp()
-    model_test.test_model()
-    model_test.test_model_from_pretrained()
